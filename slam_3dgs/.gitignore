@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+build/
+
+# 3DGS Specific
+data/
+output/
+output_test/
+output_v2/
+*.ply
+*.zip
+*.pt
+*.ckp
+
+# Submission
+test_submission/
+test_pose_list.txt
+copy_gt.py
+itri58_gt_images/
+kaggle_eval.py
+solution.csv
+generate_csv.py
+test_eval.py
+
+# System
+.DS_Store
+.vscode/
