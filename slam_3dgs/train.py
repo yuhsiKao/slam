@@ -131,6 +131,59 @@ def generate_sky_points(dataset, num_points=100000, depth_range=(50.0, 80.0), de
 
     return torch.cat(all_points), torch.cat(all_colors)
 
+
+def _gaussian_window(window_size: int, sigma: float, device) -> torch.Tensor:
+    coords = torch.arange(window_size, dtype=torch.float32, device=device) - window_size // 2
+    gauss = torch.exp(-(coords ** 2) / (2 * sigma ** 2))
+    gauss = gauss / gauss.sum()
+    return gauss.outer(gauss).unsqueeze(0).unsqueeze(0)  # [1, 1, ws, ws]
+
+
+def ssim_loss(img1: torch.Tensor, img2: torch.Tensor, window_size: int = 11) -> torch.Tensor:
+    """
+    SSIM between two [C, H, W] images in [0, 1].
+    Returns scalar in [0, 1]; higher means more similar.
+    """
+    C = img1.shape[0]
+    window = _gaussian_window(window_size, sigma=1.5, device=img1.device)
+    window = window.expand(C, 1, window_size, window_size).contiguous()
+
+    pad = window_size // 2
+    x = img1.unsqueeze(0)   # [1, C, H, W]
+    y = img2.unsqueeze(0)
+
+    mu_x  = F.conv2d(x, window, padding=pad, groups=C)
+    mu_y  = F.conv2d(y, window, padding=pad, groups=C)
+    mu_x2, mu_y2, mu_xy = mu_x ** 2, mu_y ** 2, mu_x * mu_y
+
+    sig_x2  = F.conv2d(x * x, window, padding=pad, groups=C) - mu_x2
+    sig_y2  = F.conv2d(y * y, window, padding=pad, groups=C) - mu_y2
+    sig_xy  = F.conv2d(x * y, window, padding=pad, groups=C) - mu_xy
+
+    C1, C2 = 0.01 ** 2, 0.03 ** 2
+    ssim_map = ((2 * mu_xy + C1) * (2 * sig_xy + C2)) / \
+               ((mu_x2 + mu_y2 + C1) * (sig_x2 + sig_y2 + C2))
+    return ssim_map.mean()
+
+
+class PerFrameColorCorrection(nn.Module):
+    """
+    Learnable per-frame affine color correction (gain × rgb + bias).
+    Compensates for exposure / white-balance differences between frames,
+    which is common in driving datasets.
+    """
+    def __init__(self, num_frames: int, device):
+        super().__init__()
+        self.gains  = nn.Parameter(torch.ones (num_frames, 3, 1, 1, device=device))
+        self.biases = nn.Parameter(torch.zeros(num_frames, 3, 1, 1, device=device))
+
+    def forward(self, image: torch.Tensor, frame_idx: int) -> torch.Tensor:
+        """image: [3, H, W] → corrected [3, H, W] clamped to [0, 1]."""
+        return torch.clamp(
+            image * self.gains[frame_idx] + self.biases[frame_idx], 0.0, 1.0
+        )
+
+
 class Trainer:
     """3DGS Trainer following gsplat official pattern."""
     
@@ -215,6 +268,16 @@ class Trainer:
         self.strategy_state = self.strategy.initialize_state()
         print(f"[Trainer] Strategy: densification {self.strategy.refine_start_iter}-{self.strategy.refine_stop_iter} iters, every {self.strategy.refine_every}")
         
+        # Per-frame color correction
+        self.color_corr = PerFrameColorCorrection(len(self.dataset), self.device)
+        self.aux_optimizers = {
+            "color_corr": Adam(
+                self.color_corr.parameters(),
+                lr=config.get('lr_color_corr', 1e-3),
+                eps=1e-15,
+            ),
+        }
+
         # Tensorboard
         self.tb_writer = SummaryWriter(str(self.output_dir / "runs"))
         self.iteration = 0
@@ -277,6 +340,8 @@ class Trainer:
         # Zero gradients for all optimizers
         for opt in self.optimizers.values():
             opt.zero_grad()
+        for opt in self.aux_optimizers.values():
+            opt.zero_grad()
         
         total_loss = 0.0
         num_frames = len(frame_indices)
@@ -299,17 +364,34 @@ class Trainer:
                 self.dataset.image_height,
             )
 
-            # Apply mask to images before loss calculation
-            masked_render = rendered_rgb * loss_mask
-            masked_target = target_image * loss_mask
-            
-            l1_val = F.l1_loss(masked_render, masked_target)
-            
-            # ==========================================================================
-            # You can implement other loss function (e.g., depth loss) and combine them with weights
-            # ==========================================================================
+            # Per-frame color correction (compensates for exposure variation)
+            corrected_rgb = self.color_corr(rendered_rgb.unsqueeze(0), frame_idx).squeeze(0)
 
-            loss = l1_val
+            # Apply mask to images before loss calculation
+            masked_render = corrected_rgb * loss_mask
+            masked_target = target_image * loss_mask
+
+            lambda_ssim  = self.config.get('lambda_ssim',  0.2)
+            lambda_depth = self.config.get('lambda_depth', 0.1)
+
+            # --- RGB loss: L1 + SSIM ---
+            l1_val   = F.l1_loss(masked_render, masked_target)
+            ssim_val = ssim_loss(masked_render, masked_target)
+            loss = (1.0 - lambda_ssim) * l1_val + lambda_ssim * (1.0 - ssim_val)
+
+            # --- Depth loss: rendered depth vs sparse LiDAR depth ---
+            if lambda_depth > 0:
+                lidar_depth = self.dataset.get_lidar_depth(frame_idx)
+                if lidar_depth is not None:
+                    lidar_depth = lidar_depth.to(self.device)
+                    valid = (lidar_depth > 0).float()
+                    if valid.sum() > 0:
+                        depth_loss = F.l1_loss(
+                            rendered_depth * valid,
+                            lidar_depth   * valid,
+                        )
+                        loss = loss + lambda_depth * depth_loss
+
             total_loss += loss
         
         total_loss = total_loss / num_frames
@@ -339,7 +421,11 @@ class Trainer:
             info=self.last_info,
             packed=False,
         )
-        
+
+        # Step aux optimizers (color correction)
+        for opt in self.aux_optimizers.values():
+            opt.step()
+
         return total_loss.item()
     
     def train(self, num_epochs: int, batch_size: int = 4):
@@ -388,6 +474,7 @@ class Trainer:
             'epoch': epoch,
             'iteration': self.iteration,
             'splats': {k: v.data for k, v in self.splats.items()},
+            'color_corr': self.color_corr.state_dict(),
         }, ckpt_path)
         print(f"[Trainer] Saved checkpoint: {ckpt_path}")
     
@@ -463,23 +550,34 @@ class Trainer:
             else:
                 print(f"[Warning] Key {k} not found in checkpoint.")
 
-        # CRITICAL: Re-initialize optimizers 
+        # CRITICAL: Re-initialize optimizers
         # Old optimizers are tied to the memory addresses of the old parameters
         self.optimizers = {
-            "means": Adam([{"params": self.splats["means"], "lr": self.config['lr_xyz']}], eps=1e-15),
-            "scales": Adam([{"params": self.splats["scales"], "lr": self.config['lr_scaling']}], eps=1e-15),
-            "quats": Adam([{"params": self.splats["quats"], "lr": self.config['lr_rotation']}], eps=1e-15),
-            "opacities": Adam([{"params": self.splats["opacities"], "lr": self.config['lr_opacity']}], eps=1e-15),
-            "sh0": Adam([{"params": self.splats["sh0"], "lr": self.config.get('lr_color', 2.5e-3)}], eps=1e-15),
+            "means":     Adam([{"params": self.splats["means"],     "lr": self.config['lr_xyz']}],     eps=1e-15),
+            "scales":    Adam([{"params": self.splats["scales"],    "lr": self.config['lr_scaling']}], eps=1e-15),
+            "quats":     Adam([{"params": self.splats["quats"],     "lr": self.config['lr_rotation']}], eps=1e-15),
+            "opacities": Adam([{"params": self.splats["opacities"], "lr": self.config['lr_opacity']}],  eps=1e-15),
+            "sh0":       Adam([{"params": self.splats["sh0"],       "lr": self.config.get('lr_color', 2.5e-3)}], eps=1e-15),
         }
-        
-        # Restore the scheduler state for the new 'means' optimizer
+
+        # Restore color correction and its optimizer
+        if 'color_corr' in checkpoint:
+            self.color_corr.load_state_dict(checkpoint['color_corr'])
+        self.aux_optimizers = {
+            "color_corr": Adam(
+                self.color_corr.parameters(),
+                lr=self.config.get('lr_color_corr', 1e-3),
+                eps=1e-15,
+            ),
+        }
+
+        # Restore LR scheduler: step by completed epochs (not raw iterations)
+        completed_epochs = checkpoint.get('epoch', 0)
         self.scheduler = ExponentialLR(self.optimizers["means"], gamma=self.config['lr_decay'])
-        # Step the scheduler up to the current iteration
-        for _ in range(self.iteration):
+        for _ in range(completed_epochs):
             self.scheduler.step()
-            
-        print(f"[Trainer] Resuming from iteration {self.iteration}")
+
+        print(f"[Trainer] Resuming from iteration {self.iteration} (epoch {completed_epochs})")
 
 
 if __name__ == "__main__":
@@ -490,15 +588,21 @@ if __name__ == "__main__":
         'lr_opacity': 0.05,
         'lr_scaling': 0.005,
         'lr_rotation': 0.001,
-        'lr_decay': 0.9999,
+        'lr_decay': 0.9,
+        'lr_color_corr': 1e-3,       # per-frame color correction LR
         'checkpoint_interval': 10,
-        'init_scale_lidar': 0.15,    # Size in meters for LiDAR points
+        'init_scale_lidar': 0.15,
         'init_scale_sky': 0.5,
         'init_opacity': 0.7,
-        'refine_start_iter': 199,  # Start densification at iteration x
-        'refine_stop_iter': 2001,  # Stop densification at iteration x
-        'refine_every': 100,  # Densify every x iterations
-        'checkpoint_path': None, # Set to None if starting fresh
+        'refine_start_iter': 199,
+        'refine_stop_iter': 5000,
+        'refine_every': 100,
+        'reset_every': 5000,
+        'checkpoint_path': None,
+        'lambda_ssim': 0.2,
+        'lambda_depth': 0.05,
+        'num_epochs': 30,
+        'batch_size': 8,
     }
     
     import argparse
@@ -516,6 +620,9 @@ if __name__ == "__main__":
     if ckpt and os.path.exists(ckpt):
         trainer.load_checkpoint(ckpt)
 
-    trainer.train(num_epochs=20, batch_size=8)
+    trainer.train(
+        num_epochs=config.get('num_epochs', 30),
+        batch_size=config.get('batch_size', 8),
+    )
     trainer.save_ply("gaussian_reconstruction.ply")
     print("\nTraining complete!")

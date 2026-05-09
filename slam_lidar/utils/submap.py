@@ -18,14 +18,45 @@ class SubmapManager:
 
         self.submaps.append(submap)
 
-    def update_poses(self, new_kf_poses):
-        """ Update KF poses to ensure submaps are built correctly """
+    def update_poses(self, new_kf_poses, change_thr: float = 0.07):
+        """
+        Update keyframe poses and incrementally rebuild only affected submaps.
+
+        A submap at index i covers keyframes [i-window, i+window].
+        It is rebuilt only when at least one keyframe in that range moved by
+        more than `change_thr` metres (translation) or equivalent rotation,
+        avoiding a full O(N) rebuild after every pose-graph optimisation.
+        """
+        N = len(self.keyframes_pts)
+
+        # Fall back to full rebuild if pose count changed (e.g. first call)
+        if len(new_kf_poses) != N:
+            self.keyframes_pose = [p.copy() for p in new_kf_poses]
+            self.submaps = [self.build_submap(i) for i in range(N)]
+            return
+
+        # 1. Identify keyframes whose pose changed significantly
+        changed = np.zeros(N, dtype=bool)
+        for i, (old_p, new_p) in enumerate(zip(self.keyframes_pose, new_kf_poses)):
+            dt = np.linalg.norm(new_p[:3, 3] - old_p[:3, 3])
+            dR = np.linalg.norm(new_p[:3, :3] - old_p[:3, :3], 'fro')
+            changed[i] = (dt > change_thr) or (dR > change_thr)
+
+        # 2. Update stored poses first
         self.keyframes_pose = [p.copy() for p in new_kf_poses]
-        # Clear old submaps to force rebuilding with correct poses
-        self.submaps = []
-        for i in range(len(self.keyframes_pts)):
-            sub = self.build_submap(i)
-            self.submaps.append(sub)
+
+        # 3. Rebuild only submaps whose window overlaps with a changed keyframe
+        w = self.window
+        rebuilt = 0
+        for i in range(N):
+            lo = max(0, i - w)
+            hi = min(N, i + w + 1)
+            if changed[lo:hi].any():
+                self.submaps[i] = self.build_submap(i)
+                rebuilt += 1
+
+        print(f"[SubmapMgr] Incremental rebuild: {rebuilt}/{N} submaps "
+              f"({int(changed.sum())} keyframes moved > {change_thr}m)")
             
     def build_submap(self, idx, window=None):
         """ Stack keyframes around idx into a single world-frame point cloud. """

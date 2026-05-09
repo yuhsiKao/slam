@@ -12,13 +12,13 @@ from scipy.spatial import cKDTree
 from scipy.ndimage import minimum_filter
 
 # --- camera Intrinsics  ---
-
 '''
 Those are for Track3
 '''
 W, H = 960, 720
 FX, FY = 979.71515067, 986.50585105
 CX, CY = 448.7607866, 354.91012286
+
 '''
 Those are for Track2
 '''

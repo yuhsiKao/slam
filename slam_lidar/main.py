@@ -125,9 +125,9 @@ for i, f in enumerate(files):
     # Extract per-frame rotation angle from the motion model
     cos_angle = np.clip((np.trace(prev_delta_T[:3, :3]) - 1.0) / 2.0, -1.0, 1.0)
     turn_angle_deg = np.degrees(np.arccos(cos_angle))
-    # if turn_angle_deg > 1.0:
+    # if turn_angle_deg > 2.0:
     #     print(f"[Frame {i}] ---------------------------Turn angle: {turn_angle_deg:.2f} degrees")
-    submap_window = 5 if turn_angle_deg > 2.5 else None  # wider window during turns
+    submap_window = 5 if turn_angle_deg > 3.0 else None  # wider window during turns
 
     submap_pts = submap_mgr.get_latest_submap(window=submap_window)
     if submap_pts is None:
