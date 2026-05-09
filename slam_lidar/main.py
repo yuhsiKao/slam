@@ -177,7 +177,7 @@ for i, f in enumerate(files):
 
         # ===== Periodic Optimization =====
         if not should_optimize and current_kf_idx % optimize_every == 0:
-            should_optimize = False
+            should_optimize = True
 
         # ===== Optimize & Interpolate =====
         if should_optimize:
