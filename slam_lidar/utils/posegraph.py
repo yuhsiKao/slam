@@ -24,9 +24,13 @@ class PoseGraph:
         self.graph.add(gtsam.BetweenFactorPose3(i, j, gtsam.Pose3(T), noise))
 
     def add_loop(self, i, j, T):
-        noise = gtsam.noiseModel.Isotropic.Sigma(6, 0.08)
-        # print(f"Loop edge added {i}-{j}")
-        self.graph.add(gtsam.BetweenFactorPose3(i, j, gtsam.Pose3(T), noise))
+        # Tighter base noise than odometry; Cauchy robust kernel rejects outlier loops
+        base = gtsam.noiseModel.Isotropic.Sigma(6, 0.05)
+        robust = gtsam.noiseModel.Robust.Create(
+            gtsam.noiseModel.mEstimator.Cauchy.Create(1.0),
+            base,
+        )
+        self.graph.add(gtsam.BetweenFactorPose3(i, j, gtsam.Pose3(T), robust))
 
     def optimize(self):
         self.isam.update(self.graph, self.initial)
