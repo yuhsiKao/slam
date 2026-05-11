@@ -137,7 +137,6 @@ class LoopClosure:
         self,
         icp,
         dist_thresh=8.0,
-        fitness_thresh=0.25,
         max_candidates=20,
         min_separation=15,
         max_loop_correction=2.5,
@@ -150,7 +149,6 @@ class LoopClosure:
     ):
         self.icp = icp
         self.dist_thresh = dist_thresh
-        self.fitness_thresh = fitness_thresh
         self.max_candidates = max_candidates
         self.min_separation = min_separation
         self.max_loop_correction = max_loop_correction

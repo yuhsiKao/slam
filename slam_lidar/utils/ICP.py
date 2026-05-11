@@ -11,9 +11,12 @@ _INDOOR_RANGE_P95 = 40.0
 _ENV_PARAMS = {
     'indoor':  dict(voxel_size=0.20, max_correspondence_distance=1.0,
                     max_range=30.0,  max_iterations=50,  registration_type='GICP',
-                    min_z=-3.0, max_z=10.0, max_delta_trans =1.5),
-    'outdoor': dict(voxel_size=0.30, max_correspondence_distance=1.5,                    max_range=100.0, max_iterations=80,  registration_type='GICP',
-                    min_z=-3.0, max_z=30.0, max_delta_trans =4.0),
+                    min_z=-3.0, max_z=10.0,
+                    max_delta_trans=1.5, max_delta_rot=20.0),
+    'outdoor': dict(voxel_size=0.30, max_correspondence_distance=1.5,
+                    max_range=100.0, max_iterations=80,  registration_type='GICP',
+                    min_z=-3.0, max_z=30.0,
+                    max_delta_trans=5.0, max_delta_rot=30.0),
 }
 
 
@@ -22,20 +25,21 @@ class ICP:
         self,
         num_threads=4,
         num_neighbors=20,
-        max_delta_trans=5.0,
         min_points=50,
         min_range=0.5,
         min_z=-3.0,
         max_z=30.0,
     ):
-        self.num_threads     = num_threads
-        self.num_neighbors   = num_neighbors
-        self.max_delta_trans = max_delta_trans
-        self.max_delta_rot   = 30.0   # degrees — reject if ICP rotates > 30° from init_T
-        self.min_points      = min_points
-        self.min_range       = min_range
-        self.min_z           = min_z
-        self.max_z           = max_z
+        self.num_threads   = num_threads
+        self.num_neighbors = num_neighbors
+        self.min_points    = min_points
+        self.min_range     = min_range
+        self.min_z         = min_z
+        self.max_z         = max_z
+
+        # Last successful alignment deltas — readable by callers for sigma estimation
+        self.last_delta_trans = 0.0   # metres
+        self.last_delta_rot   = 0.0   # degrees
 
         # early stopping — stop when BOTH translation AND rotation delta are tiny
         self.early_stop_delta = 1e-4   # metres
@@ -105,14 +109,16 @@ class ICP:
         else:
             env = self._env
 
-        ep         = _ENV_PARAMS[env]
-        voxel_size = ep['voxel_size']
-        max_corr   = ep['max_correspondence_distance']
-        max_range  = ep['max_range']
-        max_iter   = ep['max_iterations']
-        reg_type   = ep['registration_type']
-        min_z      = ep['min_z']
-        max_z      = ep['max_z']
+        ep              = _ENV_PARAMS[env]
+        voxel_size      = ep['voxel_size']
+        max_corr        = ep['max_correspondence_distance']
+        max_range       = ep['max_range']
+        max_iter        = ep['max_iterations']
+        reg_type        = ep['registration_type']
+        min_z           = ep['min_z']
+        max_z           = ep['max_z']
+        max_delta_trans = ep['max_delta_trans']
+        max_delta_rot   = ep['max_delta_rot']
 
         # Source is in sensor frame → apply env-specific range + Z filter.
         # Target is the world-frame submap: its points are already bounded by
@@ -186,14 +192,16 @@ class ICP:
             cos_a        = np.clip((np.trace(dT_from_init[:3, :3]) - 1.0) / 2.0, -1.0, 1.0)
             delta_rot    = np.degrees(np.arccos(cos_a))
 
-            if delta_trans > self.max_delta_trans:
-                print(f"[ICP] rejected: delta_trans={delta_trans:.3f}m > {self.max_delta_trans}  env={env}", flush=True)
+            if delta_trans > max_delta_trans:
+                print(f"[ICP] rejected: delta_trans={delta_trans:.3f}m > {max_delta_trans}  env={env}", flush=True)
                 return init_T.copy(), np.inf
 
-            if delta_rot > self.max_delta_rot:
-                print(f"[ICP] rejected: delta_rot={delta_rot:.1f}° > {self.max_delta_rot}  env={env}", flush=True)
+            if delta_rot > max_delta_rot:
+                print(f"[ICP] rejected: delta_rot={delta_rot:.1f}° > {max_delta_rot}  env={env}", flush=True)
                 return init_T.copy(), np.inf
 
+            self.last_delta_trans = delta_trans
+            self.last_delta_rot   = delta_rot
             print(f"[ICP] OK  score={score:.4f}  delta={delta_trans:.4f}m  rot={delta_rot:.2f}°  env={env}  reg={reg_type}", flush=True)
             return T, score
 

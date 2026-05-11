@@ -1,5 +1,6 @@
 # Dataset
 data/*
+itri58_colored_pcd_*
 
 # Instruction files
 *.pdf

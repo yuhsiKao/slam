@@ -113,7 +113,7 @@ class MotionPredictor:
 
     def __init__(
         self,
-        window_size:    int   = 5,
+        window_size:    int   = 6,
         trans_alpha:    float = 0.5,
         rot_beta:       float = 0.35,
         score_halflife: float = 0.3,

@@ -105,15 +105,7 @@ for i, f in enumerate(files):
     T, score = icp.align(pts, submap_pts, init_T)
     curr_pose = T.copy()
 
-    # ICP correction magnitude from init_T — used as alignment confidence proxy.
-    # Small delta → confident alignment → tight odometry edge.
-    # Large delta → uncertain or large correction → loose edge.
-    if np.isfinite(score):
-        _dT_init  = np.linalg.inv(init_T) @ T
-        icp_delta = float(np.linalg.norm(_dT_init[:3, 3]))
-    else:
-        icp_delta = np.inf
-    odom_sigma = float(np.clip(0.05 + icp_delta * 0.08, 0.05, 0.30))
+    odom_sigma = 0.1
 
     poses.append(curr_pose)
     timestamps.append(f.split("/")[-1].replace(".pcd", ""))
