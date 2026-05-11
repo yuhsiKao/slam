@@ -1,8 +1,6 @@
 import numpy as np
 
-'''
-Select KeyFrame base on distance and angle to last keyframe
-'''
+# Select keyframe based on distance and angle to last keyframe
 class KeyframeManager:
     def __init__(self, dist_thresh=1.0, ang_thresh=10):
         self.last_pose = None

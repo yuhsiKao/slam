@@ -1,5 +1,4 @@
 import gtsam
-import numpy as np
 
 class PoseGraph:
     def __init__(self):
@@ -18,9 +17,8 @@ class PoseGraph:
         self.graph.add(gtsam.PriorFactorPose3(0, gtsam.Pose3(), noise))
 
 
-    def add_odom(self, i, j, T):
-        noise = gtsam.noiseModel.Isotropic.Sigma(6, 0.1)
-        # print(f"odom edge added {i}-{j}")
+    def add_odom(self, i, j, T, sigma=0.1):
+        noise = gtsam.noiseModel.Isotropic.Sigma(6, sigma)
         self.graph.add(gtsam.BetweenFactorPose3(i, j, gtsam.Pose3(T), noise))
 
     def add_loop(self, i, j, T):

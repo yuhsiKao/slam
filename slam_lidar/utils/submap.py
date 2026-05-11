@@ -1,9 +1,9 @@
 import numpy as np
-from collections import deque
 
 class SubmapManager:
-    def __init__(self, window_size=3):
-        self.window = window_size
+    def __init__(self, window_size=3, submap_voxel=0.05):
+        self.window       = window_size
+        self.submap_voxel = submap_voxel
 
         self.keyframes_pts = []
         self.keyframes_pose = []
@@ -18,7 +18,7 @@ class SubmapManager:
 
         self.submaps.append(submap)
 
-    def update_poses(self, new_kf_poses, change_thr: float = 0.07):
+    def update_poses(self, new_kf_poses, change_thr: float = 0.05):
         """
         Update keyframe poses and incrementally rebuild only affected submaps.
 
@@ -58,20 +58,29 @@ class SubmapManager:
         print(f"[SubmapMgr] Incremental rebuild: {rebuilt}/{N} submaps "
               f"({int(changed.sum())} keyframes moved > {change_thr}m)")
             
+    @staticmethod
+    def _voxel_down(pts, voxel_size):
+        """Fast voxel downsampling: keep one point per voxel cell."""
+        if len(pts) == 0:
+            return pts
+        keys = np.floor(pts / voxel_size).astype(np.int64)
+        _, idx = np.unique(keys, axis=0, return_index=True)
+        return pts[idx]
+
     def build_submap(self, idx, window=None):
-        """ Stack keyframes around idx into a single world-frame point cloud. """
+        """Stack keyframes around idx into a voxel-downsampled world-frame point cloud."""
         w = window if window is not None else self.window
         start = max(0, idx - w)
         end = min(len(self.keyframes_pts), idx + w + 1)
 
         pts_list = []
         for i in range(start, end):
-            pts = self.keyframes_pts[i]
+            pts  = self.keyframes_pts[i]
             pose = self.keyframes_pose[i]
-            pts_w = (pose[:3, :3] @ pts.T).T + pose[:3, 3]
-            pts_list.append(pts_w)
+            pts_list.append((pose[:3, :3] @ pts.T).T + pose[:3, 3])
 
-        return np.concatenate(pts_list, axis=0)
+        combined = np.concatenate(pts_list, axis=0)
+        return self._voxel_down(combined, self.submap_voxel)
 
     def get_latest_submap(self, window=None):
         if len(self.submaps) == 0:

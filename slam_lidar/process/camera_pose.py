@@ -161,7 +161,7 @@ def interpolate_pose(target_ts, lidar_ts, lidar_poses):
 def main():
     # path settings
     target = "Track1"
-    LIDAR_POSE_FILE = f"data/{target}/result/lidar_poses.csv"
+    LIDAR_POSE_FILE = f"data/{target}/result/best_lidar_poses.csv"
     IMG_DIR = f"data/{target}/data/image"
     OUTPUT_FILE = f"data/{target}/result/camera_pose.csv"
 
